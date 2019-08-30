@@ -17,19 +17,24 @@
 
 package org.apache.spark.sql.execution.datasources.v2
 
+import java.util.UUID
+
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 import org.apache.spark.sql.{AnalysisException, Strategy}
+import org.apache.spark.sql.catalog.v2.StagingTableCatalog
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, AttributeSet, Expression, PredicateHelper, SubqueryExpression}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
-import org.apache.spark.sql.catalyst.plans.logical.{AppendData, CreateTableAsSelect, CreateV2Table, DropTable, LogicalPlan, OverwriteByExpression, OverwritePartitionsDynamic, Repartition}
+import org.apache.spark.sql.catalyst.plans.logical.{AlterTable, AppendData, CreateTableAsSelect, CreateV2Table, DeleteFromTable, DescribeTable, DropTable, LogicalPlan, OverwriteByExpression, OverwritePartitionsDynamic, Repartition, ReplaceTable, ReplaceTableAsSelect, ShowTables}
 import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
 import org.apache.spark.sql.execution.streaming.continuous.{ContinuousCoalesceExec, WriteToContinuousDataSource, WriteToContinuousDataSourceExec}
 import org.apache.spark.sql.sources
+import org.apache.spark.sql.sources.v2.TableCapability
 import org.apache.spark.sql.sources.v2.reader._
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousStream, MicroBatchStream}
+import org.apache.spark.sql.sources.v2.writer.V1WriteBuilder
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 object DataSourceV2Strategy extends Strategy with PredicateHelper {
@@ -165,11 +170,55 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
 
     case CreateTableAsSelect(catalog, ident, parts, query, props, options, ifNotExists) =>
       val writeOptions = new CaseInsensitiveStringMap(options.asJava)
-      CreateTableAsSelectExec(
-        catalog, ident, parts, planLater(query), props, writeOptions, ifNotExists) :: Nil
+      catalog match {
+        case staging: StagingTableCatalog =>
+          AtomicCreateTableAsSelectExec(
+            staging, ident, parts, query, planLater(query), props, writeOptions, ifNotExists) :: Nil
+        case _ =>
+          CreateTableAsSelectExec(
+            catalog, ident, parts, query, planLater(query), props, writeOptions, ifNotExists) :: Nil
+      }
+
+    case ReplaceTable(catalog, ident, schema, parts, props, orCreate) =>
+      catalog match {
+        case staging: StagingTableCatalog =>
+          AtomicReplaceTableExec(staging, ident, schema, parts, props, orCreate = orCreate) :: Nil
+        case _ =>
+          ReplaceTableExec(catalog, ident, schema, parts, props, orCreate = orCreate) :: Nil
+      }
+
+    case ReplaceTableAsSelect(catalog, ident, parts, query, props, options, orCreate) =>
+      val writeOptions = new CaseInsensitiveStringMap(options.asJava)
+      catalog match {
+        case staging: StagingTableCatalog =>
+          AtomicReplaceTableAsSelectExec(
+            staging,
+            ident,
+            parts,
+            query,
+            planLater(query),
+            props,
+            writeOptions,
+            orCreate = orCreate) :: Nil
+        case _ =>
+          ReplaceTableAsSelectExec(
+            catalog,
+            ident,
+            parts,
+            query,
+            planLater(query),
+            props,
+            writeOptions,
+            orCreate = orCreate) :: Nil
+      }
 
     case AppendData(r: DataSourceV2Relation, query, _) =>
-      AppendDataExec(r.table.asWritable, r.options, planLater(query)) :: Nil
+      r.table.asWritable match {
+        case v1 if v1.supports(TableCapability.V1_BATCH_WRITE) =>
+          AppendDataExecV1(v1, r.options, query) :: Nil
+        case v2 =>
+          AppendDataExec(v2, r.options, planLater(query)) :: Nil
+      }
 
     case OverwriteByExpression(r: DataSourceV2Relation, deleteExpr, query, _) =>
       // fail if any filter cannot be converted. correctness depends on removing all matching data.
@@ -177,12 +226,24 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
         filter => DataSourceStrategy.translateFilter(deleteExpr).getOrElse(
           throw new AnalysisException(s"Cannot translate expression to source filter: $filter"))
       }.toArray
-
-      OverwriteByExpressionExec(
-        r.table.asWritable, filters, r.options, planLater(query)) :: Nil
+      r.table.asWritable match {
+        case v1 if v1.supports(TableCapability.V1_BATCH_WRITE) =>
+          OverwriteByExpressionExecV1(v1, filters, r.options, query) :: Nil
+        case v2 =>
+          OverwriteByExpressionExec(v2, filters, r.options, planLater(query)) :: Nil
+      }
 
     case OverwritePartitionsDynamic(r: DataSourceV2Relation, query, _) =>
       OverwritePartitionsDynamicExec(r.table.asWritable, r.options, planLater(query)) :: Nil
+
+    case DeleteFromTable(r: DataSourceV2Relation, condition) =>
+      // fail if any filter cannot be converted. correctness depends on removing all matching data.
+      val filters = splitConjunctivePredicates(condition).map {
+        f => DataSourceStrategy.translateFilter(f).getOrElse(
+          throw new AnalysisException(s"Exec delete failed:" +
+              s" cannot translate expression to source filter: $f"))
+      }.toArray
+      DeleteFromTableExec(r.table.asDeletable, filters) :: Nil
 
     case WriteToContinuousDataSource(writer, query) =>
       WriteToContinuousDataSourceExec(writer, planLater(query)) :: Nil
@@ -199,8 +260,17 @@ object DataSourceV2Strategy extends Strategy with PredicateHelper {
         Nil
       }
 
+    case desc @ DescribeTable(r: DataSourceV2Relation, isExtended) =>
+      DescribeTableExec(desc.output, r.table, isExtended) :: Nil
+
     case DropTable(catalog, ident, ifExists) =>
       DropTableExec(catalog, ident, ifExists) :: Nil
+
+    case AlterTable(catalog, ident, _, changes) =>
+      AlterTableExec(catalog, ident, changes) :: Nil
+
+    case r : ShowTables =>
+      ShowTablesExec(r.output, r.catalog, r.namespace, r.pattern) :: Nil
 
     case _ => Nil
   }
