@@ -1384,10 +1384,12 @@ Apart from these, the following properties are also available, and may be useful
   <td><code>spark.memory.offHeap.size</code></td>
   <td>0</td>
   <td>
-    The absolute amount of memory in bytes which can be used for off-heap allocation.
+    The absolute amount of memory which can be used for off-heap allocation,  with a size unit 
+    suffix ("k", "m", "g" or "t") (e.g. 512m, 2g). If no suffix is specified, default unit is bytes. 
     This setting has no impact on heap memory usage, so if your executors' total memory consumption 
     must fit within some hard limit then be sure to shrink your JVM heap size accordingly.
-    This must be set to a positive value when <code>spark.memory.offHeap.enabled=true</code>.
+    This must be set to a positive value when <code>spark.memory.offHeap.enabled=true</code>.                                                                       
+    <em>Note:</em> It also supports units like "kb","gb", etc.Suffix can be in uppercase also ("K", "MB", etc).
   </td>
 </tr>
 <tr>
