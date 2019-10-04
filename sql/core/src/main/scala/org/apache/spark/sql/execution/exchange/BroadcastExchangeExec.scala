@@ -40,8 +40,8 @@ import org.apache.spark.util.{SparkFatalException, ThreadUtils}
  * a transformed SparkPlan.
  */
 case class BroadcastExchangeExec(
-    mode: BroadcastMode,
-    child: SparkPlan) extends Exchange {
+                                  mode: BroadcastMode,
+                                  child: SparkPlan) extends Exchange {
 
   override lazy val metrics = Map(
     "dataSize" -> SQLMetrics.createMetric(sparkContext, "data size (bytes)"),
@@ -95,7 +95,7 @@ case class BroadcastExchangeExec(
               arr.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
             case _ =>
               throw new SparkException("[BUG] BroadcastMode.transform returned unexpected type: " +
-                  relation.getClass.getName)
+                relation.getClass.getName)
           }
 
           longMetric("dataSize") += dataSize

@@ -48,7 +48,7 @@ import org.apache.spark.util.collection.MedianHeap
  *                        task set will be aborted
  */
 private[spark] class TaskSetManager(
-    sched: TaskSchedulerImpl,
+    val sched: TaskSchedulerImpl,
     val taskSet: TaskSet,
     val maxTaskFailures: Int,
     blacklistTracker: Option[BlacklistTracker] = None,
@@ -77,6 +77,10 @@ private[spark] class TaskSetManager(
     .map { case (t, idx) => t.partitionId -> idx }.toMap
   val numTasks = tasks.length
   val copiesRunning = new Array[Int](numTasks)
+
+  val sparkExecutionId = TaskPreemptionUtil.getExecutionId(Option(taskSet.properties))
+
+  val mincoreUsageCap = TaskPreemptionUtil.getMinCores(Option(taskSet.properties))
 
   // For each task, tracks whether a copy of the task has succeeded. A task will also be
   // marked as "succeeded" if it failed with a fetch failure, in which case it should not
@@ -139,20 +143,20 @@ private[spark] class TaskSetManager(
   // of failures.
   // Duplicates are handled in dequeueTaskFromList, which ensures that a
   // task hasn't already started running before launching it.
-  private val pendingTasksForExecutor = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler]val pendingTasksForExecutor = new HashMap[String, ArrayBuffer[Int]]
 
   // Set of pending tasks for each host. Similar to pendingTasksForExecutor,
   // but at host level.
-  private val pendingTasksForHost = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler] val pendingTasksForHost = new HashMap[String, ArrayBuffer[Int]]
 
   // Set of pending tasks for each rack -- similar to the above.
-  private val pendingTasksForRack = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler] val pendingTasksForRack = new HashMap[String, ArrayBuffer[Int]]
 
   // Set containing pending tasks with no locality preferences.
   private[scheduler] var pendingTasksWithNoPrefs = new ArrayBuffer[Int]
 
   // Set containing all pending tasks (also used as a stack, as above).
-  private val allPendingTasks = new ArrayBuffer[Int]
+  private[scheduler] val allPendingTasks = new ArrayBuffer[Int]
 
   // Tasks that can be speculated. Since these will be a small fraction of total
   // tasks, we'll just hold them in a HashSet.
@@ -248,7 +252,7 @@ private[spark] class TaskSetManager(
    * Return the pending tasks list for a given executor ID, or an empty list if
    * there is no map entry for that host
    */
-  private def getPendingTasksForExecutor(executorId: String): ArrayBuffer[Int] = {
+  private [scheduler] def getPendingTasksForExecutor(executorId: String): ArrayBuffer[Int] = {
     pendingTasksForExecutor.getOrElse(executorId, ArrayBuffer())
   }
 
@@ -256,7 +260,7 @@ private[spark] class TaskSetManager(
    * Return the pending tasks list for a given host, or an empty list if
    * there is no map entry for that host
    */
-  private def getPendingTasksForHost(host: String): ArrayBuffer[Int] = {
+  private [scheduler] def getPendingTasksForHost(host: String): ArrayBuffer[Int] = {
     pendingTasksForHost.getOrElse(host, ArrayBuffer())
   }
 
@@ -942,6 +946,9 @@ private[spark] class TaskSetManager(
    * Used to keep track of the number of running tasks, for enforcing scheduling policies.
    */
   def addRunningTask(tid: Long) {
+    if (conf.getBoolean("spark.scheduler.preemption.flag", false)) {
+      TaskPreemptionUtil.onTaskStart(tid, this)
+    }
     if (runningTasksSet.add(tid) && parent != null) {
       parent.increaseRunningTasks(1)
     }
@@ -949,6 +956,7 @@ private[spark] class TaskSetManager(
 
   /** If the given task ID is in the set of running tasks, removes it. */
   def removeRunningTask(tid: Long) {
+    TaskPreemptionUtil.onTaskEnd(tid, this)
     if (runningTasksSet.remove(tid) && parent != null) {
       parent.decreaseRunningTasks(1)
     }
@@ -978,10 +986,7 @@ private[spark] class TaskSetManager(
         && !isZombie) {
       for ((tid, info) <- taskInfos if info.executorId == execId) {
         val index = taskInfos(tid).index
-        // We may have a running task whose partition has been marked as successful,
-        // this partition has another task completed in another stage attempt.
-        // We treat it as a running task and will call handleFailedTask later.
-        if (successful(index) && !info.running && !killedByOtherAttempt.contains(tid)) {
+        if (successful(index) && !killedByOtherAttempt.contains(tid)) {
           successful(index) = false
           copiesRunning(index) -= 1
           tasksSuccessful -= 1
@@ -1013,8 +1018,8 @@ private[spark] class TaskSetManager(
    */
   override def checkSpeculatableTasks(minTimeToSpeculation: Int): Boolean = {
     // Can't speculate if we only have one task, and no need to speculate if the task set is a
-    // zombie or is from a barrier stage.
-    if (isZombie || isBarrier || numTasks == 1) {
+    // zombie.
+    if (isZombie || numTasks == 1) {
       return false
     }
     var foundTasks = false

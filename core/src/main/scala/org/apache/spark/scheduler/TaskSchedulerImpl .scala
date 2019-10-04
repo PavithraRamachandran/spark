@@ -36,6 +36,9 @@ import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, SystemClock, ThreadUtils, Utils}
 
+import scala.util.control.Breaks
+import scala.util.control.Breaks.break
+
 /**
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
  * It can also work with a local setup by using a `LocalSchedulerBackend` and setting
@@ -114,7 +117,7 @@ private[spark] class TaskSchedulerImpl(
 
   protected val hostsByRack = new HashMap[String, HashSet[String]]
 
-  protected val executorIdToHost = new HashMap[String, String]
+  protected[scheduler] val executorIdToHost = new HashMap[String, String]
 
   private val abortTimer = new Timer(true)
   private val clock = new SystemClock
@@ -140,6 +143,8 @@ private[spark] class TaskSchedulerImpl(
     }
 
   val rootPool: Pool = new Pool("", schedulingMode, 0, 0)
+
+ val canPreempt =  checkPreemptionFlag && SchedulingMode.FAIR.equals(this.schedulingMode)
 
   // This is a var so that we can reset it for testing purposes.
   private[spark] var taskResultGetter = new TaskResultGetter(sc.env, this)
@@ -350,6 +355,16 @@ private[spark] class TaskSchedulerImpl(
     return launchedTask
   }
 
+  def checkCPU(availableCpus: Array[Int]): Boolean = {
+    for(i<- 0 until availableCpus.length)
+      {
+        if(availableCpus(i)>0){
+          return false
+        }
+      }
+    return true
+  }
+
   /**
    * Called by cluster manager to offer resources on slaves. We respond by asking our active task
    * sets for tasks in order of priority. We fill each node with tasks in a round-robin manner so
@@ -391,7 +406,8 @@ private[spark] class TaskSchedulerImpl(
     // Build a list of tasks to assign to each worker.
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
-    val sortedTaskSets = rootPool.getSortedTaskSetQueue
+    val sortTaskSets = rootPool.getSortedTaskSetQueue
+    val sortedTaskSets = TaskPreemptionUtil.sortAccordingToWeight(sortTaskSets);
     for (taskSet <- sortedTaskSets) {
       logDebug("parentName: %s, name: %s, runningTasks: %s".format(
         taskSet.parent.name, taskSet.name, taskSet.runningTasks))
@@ -403,31 +419,78 @@ private[spark] class TaskSchedulerImpl(
     // Take each TaskSet in our scheduling order, and then offer it each node in increasing order
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
-    for (taskSet <- sortedTaskSets) {
-      val availableSlots = availableCpus.map(c => c / CPUS_PER_TASK).sum
-      // Skip the barrier taskSet if the available slots are less than the number of pending tasks.
-      if (taskSet.isBarrier && availableSlots < taskSet.numTasks) {
-        // Skip the launch process.
-        // TODO SPARK-24819 If the job requires more slots than available (both busy and free
-        // slots), fail the job on submit.
-        logInfo(s"Skip current round of resource offers for barrier stage ${taskSet.stageId} " +
-          s"because the barrier taskSet requires ${taskSet.numTasks} slots, while the total " +
-          s"number of available slots is $availableSlots.")
-      } else {
-        var launchedAnyTask = false
-        // Record all the executor IDs assigned barrier tasks on.
-        val addressesWithDescs = ArrayBuffer[(String, TaskDescription)]()
-        for (currentMaxLocality <- taskSet.myLocalityLevels) {
-          var launchedTaskAtCurrentMaxLocality = false
-          do {
-            launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(taskSet,
-              currentMaxLocality, shuffledOffers, availableCpus, tasks, addressesWithDescs)
-            launchedAnyTask |= launchedTaskAtCurrentMaxLocality
-          } while (launchedTaskAtCurrentMaxLocality)
-        }
+    import scala.util.control.Breaks._
+    breakable {
+      for (taskSet <- sortedTaskSets) {
+        logError("")
 
-        if (!launchedAnyTask) {
-          taskSet.getCompletelyBlacklistedTaskIfAny(hostToExecutors).foreach { taskIndex =>
+        val availableSlots = availableCpus.map(c => c / CPUS_PER_TASK).sum
+        // Skip the barrier taskSet if the available slots
+        // are less than the number of pending tasks.
+        if (taskSet.isBarrier && availableSlots < taskSet.numTasks) {
+          // Skip the launch process.
+          // TODO SPARK-24819 If the job requires more slots than available (both busy and free
+          // slots), fail the job on submit.
+          logInfo(s"Skip current round of resource offers for barrier stage ${taskSet.stageId} " +
+            s"because the barrier taskSet requires ${taskSet.numTasks} slots, while the total " +
+            s"number of available slots is $availableSlots.")
+        } else {
+          var launchedAnyTask = false
+          // Record all the executor IDs assigned barrier tasks on.
+          val addressesWithDescs = ArrayBuffer[(String, TaskDescription)]()
+          for (currentMaxLocality <- taskSet.myLocalityLevels) {
+            var launchedTaskAtCurrentMaxLocality = false
+            do {
+              launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(taskSet,
+                currentMaxLocality, shuffledOffers, availableCpus, tasks, addressesWithDescs)
+              launchedAnyTask |= launchedTaskAtCurrentMaxLocality
+            } while (launchedTaskAtCurrentMaxLocality)
+          }
+
+          if (!launchedAnyTask) {
+            if (canPreempt && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
+              && TaskPreemptionUtil.otherTaskToPreempt(taskSet.sparkExecutionId)) {
+              def doTaskPreemption: Boolean = {
+                val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);
+                var i = 0;
+                var isPreempted = false
+
+                // killing as many tasks as possible to
+                // reach the min core usage of the current execId
+
+                while (i < minCores) {
+
+                  val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet, this)
+
+                  // if -1 is returned means no task is present preempt
+                  if (-1 == taskId) {
+                    return isPreempted
+                  } else {
+                    if (taskIdToTaskSetManager.get(taskId).runningTasksSet.contains(taskId)) {
+                      val kill = dagScheduler.killTaskAttempt(taskId, true,
+                        "task Preemption by ExecutionId:" + taskSet.sparkExecutionId)
+                      // adding to the killed taskId set to
+                      // prevent killing the same task agai and again
+                      TaskPreemptionUtil.addKilledTaskId(taskId, taskIdToTaskSetManager.get(taskId))
+                      i += 1
+                      isPreempted = true
+                      logDebug("Task Id = " + taskId + " Preempted " +
+                        "by Execution Id = " + taskSet.sparkExecutionId)
+                    }
+                  }
+                }
+                isPreempted
+              }
+
+              var isPreempted: Boolean = doTaskPreemption
+
+              if (isPreempted) {
+                TaskPreemptionUtil.addPreemptWeight(taskSet)
+                break
+              }
+            }
+
+            taskSet.getCompletelyBlacklistedTaskIfAny(hostToExecutors).foreach { taskIndex =>
               // If the taskSet is unschedulable we try to find an existing idle blacklisted
               // executor. If we cannot find one, we abort immediately. Else we kill the idle
               // executor and kick off an abortTimer which if it doesn't schedule a task within the
@@ -441,7 +504,7 @@ private[spark] class TaskSchedulerImpl(
               // pending tasks and doesn't kill executors on idle timeouts, resulting in the abort
               // timer to expire and abort the taskSet.
               executorIdToRunningTaskIds.find(x => !isExecutorBusy(x._1)) match {
-                case Some ((executorId, _)) =>
+                case Some((executorId, _)) =>
                   if (!unschedulableTaskSetToExpiryTime.contains(taskSet)) {
                     blacklistTrackerOpt.foreach(blt => blt.killBlacklistedIdleExecutor(executorId))
 
@@ -454,58 +517,60 @@ private[spark] class TaskSchedulerImpl(
                   }
                 case None => // Abort Immediately
                   logInfo("Cannot schedule any task because of complete blacklisting. No idle" +
-                    s" executors can be found to kill. Aborting $taskSet." )
+                    s" executors can be found to kill. Aborting $taskSet.")
                   taskSet.abortSinceCompletelyBlacklisted(taskIndex)
               }
+            }
+          } else {
+            // We want to defer killing any taskSets as long as we have a non blacklisted executor
+            // which can be used to schedule a task from any active taskSets. This ensures that the
+            // job can make progress.
+            // Note: It is theoretically possible that a taskSet never gets scheduled on a
+            // non-blacklisted executor and the abort timer doesn't kick in because of a constant
+            // submission of new TaskSets. See the PR for more details.
+            if (unschedulableTaskSetToExpiryTime.nonEmpty) {
+              logInfo("Clearing the expiry times for all unschedulable taskSets as a task was " +
+                "recently scheduled.")
+              unschedulableTaskSetToExpiryTime.clear()
+            }
           }
-        } else {
-          // We want to defer killing any taskSets as long as we have a non blacklisted executor
-          // which can be used to schedule a task from any active taskSets. This ensures that the
-          // job can make progress.
-          // Note: It is theoretically possible that a taskSet never gets scheduled on a
-          // non-blacklisted executor and the abort timer doesn't kick in because of a constant
-          // submission of new TaskSets. See the PR for more details.
-          if (unschedulableTaskSetToExpiryTime.nonEmpty) {
-            logInfo("Clearing the expiry times for all unschedulable taskSets as a task was " +
-              "recently scheduled.")
-            unschedulableTaskSetToExpiryTime.clear()
+
+          if (launchedAnyTask && taskSet.isBarrier) {
+            // Check whether the barrier tasks are partially launched.
+            // TODO SPARK-24818 handle the assert failure case (that can happen when some locality
+            // requirements are not fulfilled, and we should revert the launched tasks).
+            require(addressesWithDescs.size == taskSet.numTasks,
+              s"Skip current round of resource offers for barrier stage ${taskSet.stageId} " +
+                s"because only ${addressesWithDescs.size} out of a total number of " +
+                s"${taskSet.numTasks} tasks got resource offers. The resource offers may have " +
+                "been blacklisted or cannot fulfill task locality requirements.")
+
+            // materialize the barrier coordinator.
+            maybeInitBarrierCoordinator()
+
+            // Update the taskInfos into all the barrier task properties.
+            val addressesStr = addressesWithDescs
+              // Addresses ordered by partitionId
+              .sortBy(_._2.partitionId)
+              .map(_._1)
+              .mkString(",")
+            addressesWithDescs.foreach(_._2.properties.setProperty("addresses", addressesStr))
+
+            logInfo(s"Successfully scheduled all the ${addressesWithDescs.size} tasks" +
+              s" for barrier " +
+              s"stage ${taskSet.stageId}.")
           }
-        }
-
-        if (launchedAnyTask && taskSet.isBarrier) {
-          // Check whether the barrier tasks are partially launched.
-          // TODO SPARK-24818 handle the assert failure case (that can happen when some locality
-          // requirements are not fulfilled, and we should revert the launched tasks).
-          require(addressesWithDescs.size == taskSet.numTasks,
-            s"Skip current round of resource offers for barrier stage ${taskSet.stageId} " +
-              s"because only ${addressesWithDescs.size} out of a total number of " +
-              s"${taskSet.numTasks} tasks got resource offers. The resource offers may have " +
-              "been blacklisted or cannot fulfill task locality requirements.")
-
-          // materialize the barrier coordinator.
-          maybeInitBarrierCoordinator()
-
-          // Update the taskInfos into all the barrier task properties.
-          val addressesStr = addressesWithDescs
-            // Addresses ordered by partitionId
-            .sortBy(_._2.partitionId)
-            .map(_._1)
-            .mkString(",")
-          addressesWithDescs.foreach(_._2.properties.setProperty("addresses", addressesStr))
-
-          logInfo(s"Successfully scheduled all the ${addressesWithDescs.size} tasks for barrier " +
-            s"stage ${taskSet.stageId}.")
         }
       }
     }
 
-    // TODO SPARK-24823 Cancel a job that contains barrier stage(s) if the barrier tasks don't get
-    // launched within a configured time.
-    if (tasks.size > 0) {
-      hasLaunchedTask = true
+      // TODO SPARK-24823 Cancel a job that contains barrier stage(s) if the barrier tasks don't get
+      // launched within a configured time.
+      if (tasks.size > 0) {
+        hasLaunchedTask = true
+      }
+      return tasks
     }
-    return tasks
-  }
 
   private def createUnschedulableTaskSetAbortTimer(
       taskSet: TaskSetManager,
@@ -522,6 +587,10 @@ private[spark] class TaskSchedulerImpl(
         }
       }
     }
+  }
+
+  private def checkPreemptionFlag = {
+    sc.getConf.get("spark.scheduler.preemption.flag", "false").equals("true")
   }
 
   /**

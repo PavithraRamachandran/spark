@@ -1006,3 +1006,8 @@ case class Deduplicate(
 
   override def output: Seq[Attribute] = child.output
 }
+
+case class CoreUsage(minCoreUsage: String, child: LogicalPlan)
+  extends UnaryNode {
+  override def output: Seq[Attribute] = child.output
+}
