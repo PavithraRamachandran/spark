@@ -20,7 +20,7 @@ package org.apache.spark.sql.catalyst.analysis
 import java.util.Locale
 
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.catalyst.plans.logical.{CoreUsage, _}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.CurrentOrigin
 import org.apache.spark.sql.internal.SQLConf
@@ -110,6 +110,28 @@ object ResolveHints {
     def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
       case h: UnresolvedHint => h.child
     }
+  }
+
+  /**
+   * COREUSAGE Hint accepts name "COREUSAGE"
+   * Its parameter includes a min core usage and max core usage.
+   */
+  class ResolveCoreConfHints(conf: SQLConf) extends Rule[LogicalPlan] {
+    private val COREUSAGE_HINT_NAMES = Set("COREUSAGE")
+
+
+    def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
+      case h: UnresolvedHint if COREUSAGE_HINT_NAMES.contains(h.name.toUpperCase(Locale.ROOT)) => {
+        if (h.parameters.size > 0) {
+          val minCoreUsage = (h.parameters(0)).toString
+          return CoreUsage(minCoreUsage, h.child)
+        }
+        h.child
+      }
+
+    }
+
+
   }
 
 }

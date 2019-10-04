@@ -142,6 +142,7 @@ class Analyzer(
   lazy val batches: Seq[Batch] = Seq(
     Batch("Hints", fixedPoint,
       new ResolveHints.ResolveBroadcastHints(conf),
+      new ResolveHints.ResolveCoreConfHints(conf),
       ResolveHints.RemoveAllHints),
     Batch("Simple Sanity Check", Once,
       LookupFunctions),

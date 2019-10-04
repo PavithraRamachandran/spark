@@ -908,3 +908,8 @@ case class AnalysisBarrier(child: LogicalPlan) extends LeafNode {
   override def isStreaming: Boolean = child.isStreaming
   override def doCanonicalize(): LogicalPlan = child.canonicalized
 }
+
+case class CoreUsage(minCoreUsage: String, child: LogicalPlan)
+  extends UnaryNode {
+  override def output: Seq[Attribute] = child.output
+}
