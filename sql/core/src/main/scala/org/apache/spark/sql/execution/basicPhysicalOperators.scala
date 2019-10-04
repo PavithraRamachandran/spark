@@ -661,3 +661,11 @@ object SubqueryExec {
   private[execution] val executionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool("subquery", 16))
 }
+
+case class CoreUsageExec(minCoreUsage: String, child: SparkPlan) extends UnaryExecNode {
+  override def output: Seq[Attribute] = child.output
+  protected override def doExecute(): RDD[InternalRow] = {
+    sparkContext.setLocalProperty("MinCoreUsage",minCoreUsage)
+    child.execute()
+  }
+}

@@ -24,11 +24,11 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.math.max
 import scala.util.control.NonFatal
-
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
-import org.apache.spark.internal.{config, Logging}
+import org.apache.spark.internal.{Logging, config}
 import org.apache.spark.scheduler.SchedulingMode._
+import org.apache.spark.scheduler.TaskPreemptionUtil.addToMinCoreUsageSet
 import org.apache.spark.util.{AccumulatorV2, Clock, SystemClock, Utils}
 import org.apache.spark.util.collection.MedianHeap
 
@@ -48,7 +48,7 @@ import org.apache.spark.util.collection.MedianHeap
  *                        task set will be aborted
  */
 private[spark] class TaskSetManager(
-    sched: TaskSchedulerImpl,
+    val sched: TaskSchedulerImpl,
     val taskSet: TaskSet,
     val maxTaskFailures: Int,
     blacklistTracker: Option[BlacklistTracker] = None,
@@ -78,6 +78,10 @@ private[spark] class TaskSetManager(
     .map { case (t, idx) => t.partitionId -> idx }.toMap
   val numTasks = tasks.length
   val copiesRunning = new Array[Int](numTasks)
+
+  val sparkExecutionId = TaskPreemptionUtil.getExecutionId(Option(taskSet.properties))
+
+  val mincoreUsageCap = TaskPreemptionUtil.getMinCores(Option(taskSet.properties))
 
   // For each task, tracks whether a copy of the task has succeeded. A task will also be
   // marked as "succeeded" if it failed with a fetch failure, in which case it should not
@@ -149,7 +153,7 @@ private[spark] class TaskSetManager(
   private[scheduler] var pendingTasksWithNoPrefs = new ArrayBuffer[Int]
 
   // Set containing all pending tasks (also used as a stack, as above).
-  private val allPendingTasks = new ArrayBuffer[Int]
+  private [scheduler] val allPendingTasks = new ArrayBuffer[Int]
 
   // Tasks that can be speculated. Since these will be a small fraction of total
   // tasks, we'll just hold them in a HashSet.
@@ -906,6 +910,8 @@ private[spark] class TaskSetManager(
    * Used to keep track of the number of running tasks, for enforcing scheduling policies.
    */
   def addRunningTask(tid: Long) {
+   TaskPreemptionUtil.onTaskStart(tid,this)
+    TaskPreemptionUtil.addToMinCoreUsageSet(this)
     if (runningTasksSet.add(tid) && parent != null) {
       parent.increaseRunningTasks(1)
     }
@@ -913,6 +919,8 @@ private[spark] class TaskSetManager(
 
   /** If the given task ID is in the set of running tasks, removes it. */
   def removeRunningTask(tid: Long) {
+    TaskPreemptionUtil.onTaskEnd(tid,this)
+    TaskPreemptionUtil.removeFromMinCoreUsageSet(tid,this)
     if (runningTasksSet.remove(tid) && parent != null) {
       parent.decreaseRunningTasks(1)
     }
