@@ -2034,11 +2034,7 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
-  //  val minCoreUsage = SparkContext.getActive.get.getLocalProperty("MinCoreUsage")
-    val minCoreUsage = "2"
-    if (null != minCoreUsage && !minCoreUsage.isEmpty) {
-      localProperties.get.setProperty("spark.execution.min.core", minCoreUsage.toString)
-    }
+
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
@@ -2053,7 +2049,7 @@ class SparkContext(config: SparkConf) extends Logging {
    * @param partitions set of partitions to run on; some jobs may not want to compute on all
    * partitions of the target RDD, e.g. for operations like `first()`
    * @return in-memory collection with a result of the job (each collection element will contain
-   * a result from one partition)
+   * a result from one partition)7
    */
   def runJob[T, U: ClassTag](
       rdd: RDD[T],

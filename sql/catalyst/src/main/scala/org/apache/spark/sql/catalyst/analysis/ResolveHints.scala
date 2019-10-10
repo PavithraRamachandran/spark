@@ -124,7 +124,12 @@ object ResolveHints {
       case h: UnresolvedHint if COREUSAGE_HINT_NAMES.contains(h.name.toUpperCase(Locale.ROOT)) => {
         if (h.parameters.size > 0) {
           val minCoreUsage = (h.parameters(0)).toString
-          return CoreUsage(minCoreUsage, h.child)
+          if (minCoreUsage.toInt.isInstanceOf[Int] && minCoreUsage.toInt > 0) {
+            return CoreUsage(minCoreUsage, h.child)
+          }
+          else {
+            throw new AnalysisException("Core Usage Hint parameter should be an Integer with value greater than zero. ")
+          }
         }
         h.child
       }
