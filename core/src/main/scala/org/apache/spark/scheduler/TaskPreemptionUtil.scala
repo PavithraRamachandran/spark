@@ -19,7 +19,7 @@ package org.apache.spark.scheduler
 
 import java.util
 import java.util.Properties
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
 import org.apache.spark.internal.Logging
 
@@ -27,7 +27,6 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 object TaskPreemptionUtil extends Logging {
-
 
   val SPARK_EXECUTION_ID = "spark.execution.id"
   val SPARK_SQL_EXECUTION_ID = "spark.sql.execution.id"
@@ -42,7 +41,7 @@ object TaskPreemptionUtil extends Logging {
   //taskId to executionID mapping
   private val taskIdVsExecutionID = new java.util.TreeMap[Long, String](Ordering[Long].reverse)
 
-  private val executionIdVsWeightage = new mutable.HashMap[String, Int]
+  private val executionIdVsWeightage = new mutable.HashMap[String, Long]
 
   //keeping track of the taskid s killled, inorder to prevent over killin of the same task
   private val killedTaskId = new mutable.HashSet[Long]
@@ -51,6 +50,8 @@ object TaskPreemptionUtil extends Logging {
 
   //keeping track of the Preempted cores per execution Id
   private val executionIdVsPreemptedCores = new mutable.HashMap[String, AtomicInteger]
+
+  val execIdWeight= new AtomicLong(0)
 
   private[scheduler] def onTaskStart(taskId: Long,
                                      taskSetManager: TaskSetManager): Unit = synchronized {
@@ -65,7 +66,7 @@ object TaskPreemptionUtil extends Logging {
           addAndGet((+taskSetManager.sched.CPUS_PER_TASK))
       }
     }
-    logDebug("ExecutionUsageTracker: Record taskStart for" + taskId +
+    logError("ExecutionUsageTracker: Record taskStart for" + taskId +
       " and execution id" + taskSetManager.sparkExecutionId.get)
   }
 
@@ -76,7 +77,7 @@ object TaskPreemptionUtil extends Logging {
         > taskSetManager.mincoreUsageCap.get) {
       executionIdVsMinCoreUsage.add(taskSetManager.sparkExecutionId.get)
       executionIdVsPreemtTime.remove(taskSetManager.sparkExecutionId.get)
-      logDebug("TaskPreemptionUtil: Record execution id:" + taskSetManager.sparkExecutionId.get
+      logError("TaskPreemptionUtil: Record execution id:" + taskSetManager.sparkExecutionId.get
         + " reached Min Core Usage of " + taskSetManager.mincoreUsageCap.get)
     }
   }
@@ -113,7 +114,7 @@ object TaskPreemptionUtil extends Logging {
 
       if (!executionIdVsCoreUsage.get(taskSetManager.sparkExecutionId.get).isDefined) {
         executionIdVsPreemtTime.remove(taskSetManager.sparkExecutionId.get)
-        //executionIdVsWeightage.remove(taskSetManager.sparkExecutionId.get)
+        executionIdVsWeightage.remove(taskSetManager.sparkExecutionId.get)
       }
     }
   }
@@ -157,9 +158,10 @@ object TaskPreemptionUtil extends Logging {
       (!executionIdVsPreemtTime.get(execId.get).isDefined || isPreemptTimeExceedLimit(execId.get))) {
       if (taskSetManager.mincoreUsageCap.isDefined) {
         if (executionIdVsCoreUsage.get(execId.get).isDefined) {
-          logError(" canPreempt for execId = " + execId + "Core Usage = " + executionIdVsCoreUsage.get(execId.get).get)
-          return executionIdVsCoreUsage.get(execId.get).get.get < taskSetManager.mincoreUsageCap.get
+          val min = Math.min(taskSetManager.mincoreUsageCap.get, taskSetManager.allPendingTasks.size)
+          return executionIdVsCoreUsage.get(execId.get).get.get < min
         }
+        if(!taskSetManager.allPendingTasks.isEmpty)
         return true
       }
     }
@@ -185,6 +187,7 @@ object TaskPreemptionUtil extends Logging {
     if (!executionIdVsMinCoreUsage.isEmpty) {
       executionIdVsMinCoreUsage.foreach(execId => {
         if (!execId.equals(executionId.get)) {
+          logError("otherTaskToPreempt execId: "+ execId)
           return true
         }
       })
@@ -202,10 +205,6 @@ object TaskPreemptionUtil extends Logging {
         for (entry <- taskIdVsExecutionID.entrySet) {
           if (entry.getValue.equals(execId) && !killedTaskId.contains(entry.getKey) &&
             canKillTaskId(scheduler.taskIdToTaskSetManager.get(entry.getKey))) {
-            if (taskSetManager.mincoreUsageCap.isDefined &&
-              !executionIdVsWeightage.get(taskSetManager.sparkExecutionId.get).isDefined) {
-              executionIdVsWeightage.put(taskSetManager.sparkExecutionId.get, taskSetManager.mincoreUsageCap.get)
-            }
             return entry.getKey
           }
         }
@@ -238,7 +237,7 @@ object TaskPreemptionUtil extends Logging {
   }
 
   //Gets the min no of tasks to preempt inorder to run the waiting task.
-  private[scheduler] def getMincoreToPreempt(taskSetManager: TaskSetManager): Int = {
+  private[scheduler] def getMincoreToPreempt(taskSetManager: TaskSetManager): Int = synchronized{
     if (taskSetManager.mincoreUsageCap.isDefined) {
       var cores = taskSetManager.mincoreUsageCap.get.toInt
       if (executionIdVsCoreUsage.get(taskSetManager.sparkExecutionId.get).isDefined) {
@@ -308,5 +307,14 @@ object TaskPreemptionUtil extends Logging {
 
     false
   }
+
+  private[scheduler] def addPreemptWeight(taskSetManager: TaskSetManager): Unit = {
+
+    executionIdVsWeightage.put(taskSetManager.sparkExecutionId.get, execIdWeight.getAndIncrement())
+    logError("addPreemptWeight execId:"+taskSetManager.sparkExecutionId.get +" Weight =" +
+      executionIdVsWeightage.get(taskSetManager.sparkExecutionId.get))
+  }
+
+
 
 }

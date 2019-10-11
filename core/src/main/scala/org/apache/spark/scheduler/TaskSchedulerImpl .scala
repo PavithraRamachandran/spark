@@ -365,17 +365,23 @@ private[spark] class TaskSchedulerImpl(
     // of locality levels so that it gets a chance to launch local tasks on all of them.
     // NOTE: the preferredLocality order: PROCESS_LOCAL, NODE_LOCAL, NO_PREF, RACK_LOCAL, ANY
     for (taskSet <- sortedTaskSets) {
+
       logError("")
-      logError("Launching TaskSet-" + taskSet + " ExecId=" + taskSet.sparkExecutionId.get)
+      if (taskSet.sparkExecutionId.isDefined) {
+        logError("Launching TaskSet-" + taskSet + " ExecId=" + taskSet.sparkExecutionId.get)
+      }
       var launchedAnyTask = false
       var launchedTaskAtCurrentMaxLocality = false
-      for (currentMaxLocality <- taskSet.myLocalityLevels) {
-        do {
-          launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(
-            taskSet, currentMaxLocality, shuffledOffers, availableCpus, tasks)
-          launchedAnyTask |= launchedTaskAtCurrentMaxLocality
-        } while (launchedTaskAtCurrentMaxLocality)
-      }
+      import scala.util.control.Breaks._
+      breakable {
+        for (currentMaxLocality <- taskSet.myLocalityLevels) {
+          do {
+            launchedTaskAtCurrentMaxLocality = resourceOfferSingleTaskSet(
+              taskSet, currentMaxLocality, shuffledOffers, availableCpus, tasks)
+            launchedAnyTask |= launchedTaskAtCurrentMaxLocality
+          } while (launchedTaskAtCurrentMaxLocality)
+        }
+
       if (!launchedAnyTask) {
         logError(" Not Launched TaskSet-" + taskSet + " ExecId=" + taskSet.sparkExecutionId.get)
         // checking if we can preempt the task
@@ -385,9 +391,12 @@ private[spark] class TaskSchedulerImpl(
           logError("---------------------------------------------------------------------------")
           val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);
           var i = 0;
+          var isPreempted = false
           // killing as many tasks as possible to reach the min core usage of the current execId
           while (i < minCores) {
+
             val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet, this)
+
             // if -1 is returned means no task is present preempt
             if (-1 == taskId) {
               i += 1
@@ -400,13 +409,21 @@ private[spark] class TaskSchedulerImpl(
                 //adding the execid to execIdPreempttime map, inorder to not kill until a time out once preemption is triggered
                 //TaskPreemptionUtil.addPreempTime(taskSet.sparkExecutionId.get)
                 i += 1
+                isPreempted = true
                 logDebug("Task Id = " + taskId + " Preempted by Execution Id = " + taskSet.sparkExecutionId)
               }
             }
           }
+          if(isPreempted) {
+            TaskPreemptionUtil.addPreemptWeight(taskSet)
+            break()
+          }
         }
+
+      }
         taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
       }
+
     }
 
     if (tasks.size > 0) {
