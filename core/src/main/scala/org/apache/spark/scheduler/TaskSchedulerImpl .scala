@@ -34,6 +34,7 @@ import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, ThreadUtils, Utils}
 
+import scala.util.control.Breaks
 import scala.util.control.Breaks.break
 
 /**
@@ -135,6 +136,8 @@ private[spark] class TaskSchedulerImpl(
     }
 
   val rootPool: Pool = new Pool("", schedulingMode, 0, 0)
+
+ val canPreempt =  checkPreemptionFlag && SchedulingMode.FAIR.equals(this.schedulingMode)
 
   // This is a var so that we can reset it for testing purposes.
   private[spark] var taskResultGetter = new TaskResultGetter(sc.env, this)
@@ -312,6 +315,16 @@ private[spark] class TaskSchedulerImpl(
     return launchedTask
   }
 
+  def checkCPU(availableCpus: Array[Int]): Boolean = {
+    for(i<- 0 until availableCpus.length)
+      {
+        if(availableCpus(i)>0){
+          return false
+        }
+      }
+    return true
+  }
+
   /**
    * Called by cluster manager to offer resources on slaves. We respond by asking our active task
    * sets for tasks in order of priority. We fill each node with tasks in a round-robin manner so
@@ -384,35 +397,42 @@ private[spark] class TaskSchedulerImpl(
           } while (launchedTaskAtCurrentMaxLocality)
         }
         if (!launchedAnyTask) {
-          if (checkPreemptionFlag && SchedulingMode.FAIR.equals(this.schedulingMode)
-            && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
+          if (canPreempt && checkCPU(availableCpus) && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
             && TaskPreemptionUtil.otherTaskToPreempt(taskSet.sparkExecutionId)) {
-            val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);
-            var i = 0;
-            var isPreempted = false
-            // killing as many tasks as possible to reach the min core usage of the current execId
-            while (i < minCores) {
+            def doTaskPreemption:Boolean = {
+              val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);
+              var i = 0;
+              var isPreempted = false
 
-              val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet, this)
+              // killing as many tasks as possible to reach the min core usage of the current execId
 
-              // if -1 is returned means no task is present preempt
-              if (-1 == taskId) {
-                i += 1
-              } else {
-                if (taskIdToTaskSetManager.get(taskId).runningTasksSet.contains(taskId)) {
-                  val kill = dagScheduler
-                    .killTaskAttempt(taskId, true, "task Preemption by ExecutionId:" + taskSet.sparkExecutionId)
-                  //adding to the killed taskId set to prevent killing the same task agai and again
-                  TaskPreemptionUtil.addKilledTaskId(taskId, taskIdToTaskSetManager.get(taskId))
-                  i += 1
-                  isPreempted = true
-                  logDebug("Task Id = " + taskId + " Preempted by Execution Id = " + taskSet.sparkExecutionId)
+              while (i < minCores) {
+
+                val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet, this)
+
+                // if -1 is returned means no task is present preempt
+                if (-1 == taskId) {
+                    return isPreempted
+                } else {
+                  if (taskIdToTaskSetManager.get(taskId).runningTasksSet.contains(taskId)) {
+                    val kill = dagScheduler
+                      .killTaskAttempt(taskId, true, "task Preemption by ExecutionId:" + taskSet.sparkExecutionId)
+                    //adding to the killed taskId set to prevent killing the same task agai and again
+                    TaskPreemptionUtil.addKilledTaskId(taskId, taskIdToTaskSetManager.get(taskId))
+                    i += 1
+                    isPreempted = true
+                    logDebug("Task Id = " + taskId + " Preempted by Execution Id = " + taskSet.sparkExecutionId)
+                  }
                 }
               }
+              isPreempted
             }
+
+            var isPreempted: Boolean = doTaskPreemption
+
             if (isPreempted) {
               TaskPreemptionUtil.addPreemptWeight(taskSet)
-              break()
+              break
             }
           }
           taskSet.abortIfCompletelyBlacklisted(hostToExecutors)
