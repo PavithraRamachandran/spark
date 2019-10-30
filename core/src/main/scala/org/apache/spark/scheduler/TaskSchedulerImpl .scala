@@ -115,7 +115,7 @@ private[spark] class TaskSchedulerImpl(
 
   protected val hostsByRack = new HashMap[String, HashSet[String]]
 
-  protected val executorIdToHost = new HashMap[String, String]
+  protected[scheduler] val executorIdToHost = new HashMap[String, String]
 
   // Listener object to pass upcalls into
   var dagScheduler: DAGScheduler = null
@@ -397,7 +397,7 @@ private[spark] class TaskSchedulerImpl(
           } while (launchedTaskAtCurrentMaxLocality)
         }
         if (!launchedAnyTask) {
-          if (canPreempt && checkCPU(availableCpus) && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
+          if (canPreempt && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
             && TaskPreemptionUtil.otherTaskToPreempt(taskSet.sparkExecutionId)) {
             def doTaskPreemption:Boolean = {
               val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);

@@ -192,16 +192,44 @@ object TaskPreemptionUtil extends Logging {
     false
   }
 
+
+
+  def checkLocality(taskSetManager: TaskSetManager, scheduler: TaskSchedulerImpl, taskId: Long): Boolean = {
+    var canPreempt = false;
+    if (!taskSetManager.pendingTasksForExecutor.isEmpty &&
+      !taskSetManager.getPendingTasksForExecutor(scheduler.taskIdToExecutorId.get(taskId).get).isEmpty) {
+      canPreempt = true;
+    }
+
+    if (!taskSetManager.pendingTasksForHost.isEmpty) {
+     var host= scheduler.executorIdToHost(scheduler.taskIdToExecutorId.get(taskId).get)
+      if(!taskSetManager.getPendingTasksForHost(host).isEmpty)
+        canPreempt|= true;
+    }
+
+    if(!taskSetManager.pendingTasksForRack.isEmpty){
+      var host= scheduler.executorIdToHost(scheduler.taskIdToExecutorId.get(taskId).get)
+      if(scheduler.getRackForHost(host).isDefined
+        && !taskSetManager.pendingTasksForRack(scheduler.getRackForHost(host).get).isEmpty)
+        canPreempt|= true;
+    }
+    if(!taskSetManager.pendingTasksWithNoPrefs.isEmpty){
+      canPreempt|=true
+    }
+    return canPreempt
+  }
+
   /*
-  * Fetch the TaskId to Preempt
-   */
+      * Fetch the TaskId to Preempt
+       */
   private[scheduler] def getTaskIdToPreempt(taskSetManager: TaskSetManager, scheduler: TaskSchedulerImpl): Long = {
     executionIdVsMinCoreUsage.foreach(execId => {
       if (!execId.equals(taskSetManager.sparkExecutionId.get)) {
         import scala.collection.JavaConversions._
         for (entry <- taskIdVsExecutionID.entrySet) {
           if (entry.getValue.equals(execId) && !killedTaskId.contains(entry.getKey) &&
-            canKillTaskId(scheduler.taskIdToTaskSetManager.get(entry.getKey))) {
+            canKillTaskId(scheduler.taskIdToTaskSetManager.get(entry.getKey))
+            && checkLocality(taskSetManager, scheduler,entry.getKey)) {
             return entry.getKey
           }
         }

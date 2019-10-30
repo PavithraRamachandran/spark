@@ -140,14 +140,14 @@ private[spark] class TaskSetManager(
   // of failures.
   // Duplicates are handled in dequeueTaskFromList, which ensures that a
   // task hasn't already started running before launching it.
-  private val pendingTasksForExecutor = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler]val pendingTasksForExecutor = new HashMap[String, ArrayBuffer[Int]]
 
   // Set of pending tasks for each host. Similar to pendingTasksForExecutor,
   // but at host level.
-  private val pendingTasksForHost = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler] val pendingTasksForHost = new HashMap[String, ArrayBuffer[Int]]
 
   // Set of pending tasks for each rack -- similar to the above.
-  private val pendingTasksForRack = new HashMap[String, ArrayBuffer[Int]]
+  private [scheduler] val pendingTasksForRack = new HashMap[String, ArrayBuffer[Int]]
 
   // Set containing pending tasks with no locality preferences.
   private[scheduler] var pendingTasksWithNoPrefs = new ArrayBuffer[Int]
@@ -249,7 +249,7 @@ private[spark] class TaskSetManager(
    * Return the pending tasks list for a given executor ID, or an empty list if
    * there is no map entry for that host
    */
-  private def getPendingTasksForExecutor(executorId: String): ArrayBuffer[Int] = {
+  private[scheduler] def getPendingTasksForExecutor(executorId: String): ArrayBuffer[Int] = {
     pendingTasksForExecutor.getOrElse(executorId, ArrayBuffer())
   }
 
@@ -257,7 +257,7 @@ private[spark] class TaskSetManager(
    * Return the pending tasks list for a given host, or an empty list if
    * there is no map entry for that host
    */
-  private def getPendingTasksForHost(host: String): ArrayBuffer[Int] = {
+  private[scheduler] def getPendingTasksForHost(host: String): ArrayBuffer[Int] = {
     pendingTasksForHost.getOrElse(host, ArrayBuffer())
   }
 
@@ -265,7 +265,7 @@ private[spark] class TaskSetManager(
    * Return the pending rack-local task list for a given rack, or an empty list if
    * there is no map entry for that rack
    */
-  private def getPendingTasksForRack(rack: String): ArrayBuffer[Int] = {
+  private[scheduler] def getPendingTasksForRack(rack: String): ArrayBuffer[Int] = {
     pendingTasksForRack.getOrElse(rack, ArrayBuffer())
   }
 
