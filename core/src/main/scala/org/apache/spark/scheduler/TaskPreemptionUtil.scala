@@ -29,7 +29,9 @@ import org.apache.spark.internal.Logging
 object TaskPreemptionUtil extends Logging {
 
   val SPARK_EXECUTION_ID = "spark.execution.id"
+
   val SPARK_SQL_EXECUTION_ID = "spark.sql.execution.id"
+
   val SPARK_EXECUTION_MIN_CORE = "spark.execution.min.core"
 
   // CoreUsage per execution Id
@@ -122,34 +124,20 @@ object TaskPreemptionUtil extends Logging {
     }
   }
 
-  def getInt(props: Option[Properties], key: String): Option[Int] = {
-    if (props.isDefined) {
-      val value = props.get.getProperty(key)
-      if (value != null) {
-        try {
-          return Option(value.toInt)
-        }
-        catch {
-          case e: NumberFormatException =>
-            logDebug("property resulted " + key)
-        }
-      }
-    }
-    None
-  }
+  def getExecutionId(props: Option[Properties], execId: String): Option[String] = {
 
-  def getExecutionId(props: Option[Properties]): Option[String] = {
-    if (props.isDefined) {
+    if (null != execId) {
+      return Option(execId)
+    } else if (props.isDefined) {
       return Option(props.get.getProperty(SPARK_EXECUTION_ID,
         props.get.getProperty(SPARK_SQL_EXECUTION_ID)))
     } else {
       None
+
+
     }
   }
 
-  private[scheduler] def getMinCores(props: Option[Properties]): Option[Int] = {
-    getInt(props, SPARK_EXECUTION_MIN_CORE).filter(_ > 0)
-  }
 
   /*
   * Check if task Preemption can be done for the current ExecId

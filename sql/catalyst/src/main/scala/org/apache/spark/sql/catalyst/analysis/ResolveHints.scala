@@ -139,28 +139,4 @@ object ResolveHints {
     }
   }
 
-  /**
-   * COREUSAGE Hint accepts name "COREUSAGE"
-   * Its parameter includes a min core usage and max core usage.
-   */
-  class ResolveCoreConfHints(conf: SQLConf) extends Rule[LogicalPlan] {
-    private val COREUSAGE_HINT_NAMES = Set("COREUSAGE")
-
-
-    def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
-      case h: UnresolvedHint if COREUSAGE_HINT_NAMES.contains(h.name.toUpperCase(Locale.ROOT)) =>
-        if (h.parameters.size > 0) {
-          val minCoreUsage = (h.parameters(0)).toString
-          if (minCoreUsage.toInt.isInstanceOf[Int] && minCoreUsage.toInt > 0) {
-            return CoreUsage(minCoreUsage, h.child)
-          }
-          else {
-            throw new AnalysisException("Core Usage Hint parameter" +
-              " should be an Integer with value greater than zero. ")
-          }
-        }
-        h.child
-
-    }
-  }
 }

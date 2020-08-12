@@ -423,7 +423,7 @@ private[spark] class TaskSchedulerImpl(
     breakable {
       for (taskSet <- sortedTaskSets) {
         logError("")
-
+        logInfo("******Execution ID:  " + taskSet.sparkExecutionId + "********************** ")
         val availableSlots = availableCpus.map(c => c / CPUS_PER_TASK).sum
         // Skip the barrier taskSet if the available slots
         // are less than the number of pending tasks.

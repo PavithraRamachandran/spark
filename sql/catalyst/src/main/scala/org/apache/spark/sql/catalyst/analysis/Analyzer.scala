@@ -146,7 +146,6 @@ class Analyzer(
     Batch("Hints", fixedPoint,
       new ResolveHints.ResolveBroadcastHints(conf),
       ResolveHints.ResolveCoalesceHints,
-      new ResolveHints.ResolveCoreConfHints(conf),
       ResolveHints.RemoveAllHints),
     Batch("Simple Sanity Check", Once,
       LookupFunctions),

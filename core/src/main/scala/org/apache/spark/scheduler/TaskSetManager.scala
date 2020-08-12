@@ -24,13 +24,14 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet}
 import scala.math.max
 import scala.util.control.NonFatal
-
 import org.apache.spark._
 import org.apache.spark.TaskState.TaskState
-import org.apache.spark.internal.{config, Logging}
+import org.apache.spark.internal.{Logging, config}
 import org.apache.spark.scheduler.SchedulingMode._
+import org.apache.spark.scheduler.TaskPreemptionUtil.{SPARK_EXECUTION_ID, SPARK_EXECUTION_MIN_CORE}
 import org.apache.spark.util.{AccumulatorV2, Clock, LongAccumulator, SystemClock, Utils}
 import org.apache.spark.util.collection.MedianHeap
+import org.json4s.scalap.scalasig.ScalaSigEntryParsers.entryType
 
 /**
  * Schedules the tasks within a single TaskSet in the TaskSchedulerImpl. This class keeps track of
@@ -78,9 +79,9 @@ private[spark] class TaskSetManager(
   val numTasks = tasks.length
   val copiesRunning = new Array[Int](numTasks)
 
-  val sparkExecutionId = TaskPreemptionUtil.getExecutionId(Option(taskSet.properties))
+  val sparkExecutionId = TaskPreemptionUtil.getExecutionId(Option(taskSet.properties), conf.get(SPARK_EXECUTION_ID))
 
-  val mincoreUsageCap = TaskPreemptionUtil.getMinCores(Option(taskSet.properties))
+  val mincoreUsageCap = Option(conf.getInt(SPARK_EXECUTION_MIN_CORE, 0)).filter(_ > 0)
 
   // For each task, tracks whether a copy of the task has succeeded. A task will also be
   // marked as "succeeded" if it failed with a fetch failure, in which case it should not
