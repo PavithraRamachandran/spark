@@ -36,8 +36,6 @@ import org.apache.spark.scheduler.TaskLocality.TaskLocality
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.{AccumulatorV2, SystemClock, ThreadUtils, Utils}
 
-import scala.util.control.Breaks
-import scala.util.control.Breaks.break
 
 /**
  * Schedules tasks for multiple types of clusters by acting through a SchedulerBackend.
@@ -144,7 +142,7 @@ private[spark] class TaskSchedulerImpl(
 
   val rootPool: Pool = new Pool("", schedulingMode, 0, 0)
 
- val canPreempt =  checkPreemptionFlag && SchedulingMode.FAIR.equals(this.schedulingMode)
+ val canPreempt = checkPreemptionFlag && SchedulingMode.FAIR.equals(this.schedulingMode)
 
   // This is a var so that we can reset it for testing purposes.
   private[spark] var taskResultGetter = new TaskResultGetter(sc.env, this)
@@ -356,12 +354,11 @@ private[spark] class TaskSchedulerImpl(
   }
 
   def checkCPU(availableCpus: Array[Int]): Boolean = {
-    for(i<- 0 until availableCpus.length)
-      {
-        if(availableCpus(i)>0){
-          return false
-        }
+    for (i <- 0 until availableCpus.length) {
+      if (availableCpus(i) > 0) {
+        return false
       }
+    }
     return true
   }
 
@@ -407,7 +404,11 @@ private[spark] class TaskSchedulerImpl(
     val tasks = shuffledOffers.map(o => new ArrayBuffer[TaskDescription](o.cores / CPUS_PER_TASK))
     val availableCpus = shuffledOffers.map(o => o.cores).toArray
     val sortTaskSets = rootPool.getSortedTaskSetQueue
+    logError("####################################################################################")
+    logError("Default taskSetOrder :" + sortTaskSets)
     val sortedTaskSets = TaskPreemptionUtil.sortAccordingToWeight(sortTaskSets);
+    logError("####################################################################################")
+    logError("Default SortedtaskSetOrder :" + sortedTaskSets.to)
     for (taskSet <- sortedTaskSets) {
       logDebug("parentName: %s, name: %s, runningTasks: %s".format(
         taskSet.parent.name, taskSet.name, taskSet.runningTasks))
@@ -450,17 +451,20 @@ private[spark] class TaskSchedulerImpl(
           if (!launchedAnyTask) {
             if (canPreempt && TaskPreemptionUtil.canPreempt(taskSet.sparkExecutionId, taskSet)
               && TaskPreemptionUtil.otherTaskToPreempt(taskSet.sparkExecutionId)) {
+              logError("****** Prremption Logic Enter*********")
               def doTaskPreemption: Boolean = {
-                val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet);
-                var i = 0;
+                val execIdToPreempt = TaskPreemptionUtil.getExecIDToPreempt(taskSet);
                 var isPreempted = false
-
-                // killing as many tasks as possible to
-                // reach the min core usage of the current execId
+                if (null != execIdToPreempt) {
+                  val minCores = TaskPreemptionUtil.getMincoreToPreempt(taskSet,
+                    execIdToPreempt.toString)
+                  var i = 0;
+                  logError("Number of Core to be freed : " + minCores)
 
                 while (i < minCores) {
 
-                  val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet, this)
+                  val taskId = TaskPreemptionUtil.getTaskIdToPreempt(taskSet,
+                    execIdToPreempt.toString, this)
 
                   // if -1 is returned means no task is present preempt
                   if (-1 == taskId) {
@@ -474,10 +478,11 @@ private[spark] class TaskSchedulerImpl(
                       TaskPreemptionUtil.addKilledTaskId(taskId, taskIdToTaskSetManager.get(taskId))
                       i += 1
                       isPreempted = true
-                      logDebug("Task Id = " + taskId + " Preempted " +
+                      logError("Task Id = " + taskId + " Preempted " +
                         "by Execution Id = " + taskSet.sparkExecutionId)
                     }
                   }
+                }
                 }
                 isPreempted
               }
