@@ -189,11 +189,15 @@ object TaskPreemptionUtil extends Logging {
        */
   private[scheduler] def getTaskIdToPreempt(taskSetManager: TaskSetManager, execId: String,
                                             scheduler: TaskSchedulerImpl): Long = {
-    logError("****** getTaskIdToPreempt Logic Enter*********")
-    if (!execId.equals(taskSetManager.sparkExecutionId.get)) {
+    logError("****** getTaskIdToPreempt Logic Enter********* for ExecID " + execId)
+      if (!execId.equals(taskSetManager.sparkExecutionId.get)) {
       import scala.collection.JavaConversions._
       for (entry <- taskIdVsExecutionID.entrySet) {
-        if (entry.getValue.equals(execId) && !killedTaskId.contains(entry.getKey)
+        logError("entry.getValue=" + entry.getValue)
+        logError("!killedTaskId.contains(entry.getKey) " + !killedTaskId.contains(entry.getKey))
+        logError("checkLocality(taskSetManager, scheduler, entry.getKey)=" +
+          checkLocality(taskSetManager, scheduler, entry.getKey))
+                if (entry.getValue.equals(execId) && !killedTaskId.contains(entry.getKey)
           && checkLocality(taskSetManager, scheduler, entry.getKey)) {
           return entry.getKey
         }
@@ -235,11 +239,12 @@ object TaskPreemptionUtil extends Logging {
     logError("Execution ID =" + taskSetManager.sparkExecutionId.get)
     logError("CoreUsage defined for thr execid " +
       executionIdVsCoreUsage.get(taskSetManager.sparkExecutionId.get).isDefined)
-    executionIdVsCoreUsage.foreach(execId => {
-      if (taskSetManager.preemptThreshold.isDefined &&
-        !execId.equals(taskSetManager.sparkExecutionId.get)
-        && executionIdVsCoreUsage.get(execId._1).isDefined) {
-        logError("Exection ID to be Preempted " + execId)
+    val sortedExecutionUsage = executionIdVsCoreUsage.toList.sortBy(_._2.get()).reverse
+    logError("Sorted CoreUsage " + sortedExecutionUsage)
+    sortedExecutionUsage.foreach(execId => {
+      if (!execId._1.equals(taskSetManager.sparkExecutionId.get)) {
+        logError("Exection ID to be Preempted " + execId._1)
+        logError("CoreUsage to be Preempted " + execId._2)
         return execId._1
       }
       null
@@ -257,7 +262,7 @@ object TaskPreemptionUtil extends Logging {
     logError("CoreUsage defined for thr execid " +
       executionIdVsCoreUsage.get(execId).isDefined)
     if (taskSetManager.preemptThreshold.isDefined) {
-      var cores = (executionIdVsCoreUsage.get(execId).get.get.toDouble
+      var cores = (executionIdVsCoreUsage(execId).get.toDouble
         * (taskSetManager.preemptThreshold.get.toDouble / 100))
 
       if (cores > 0) {
@@ -265,6 +270,11 @@ object TaskPreemptionUtil extends Logging {
       }
     }
     -1
+  }
+
+  private def getCoreUsageOnThreshold(taskSetManager: TaskSetManager, execId: String) = {
+    (executionIdVsCoreUsage(execId).get.toDouble
+      * (taskSetManager.preemptThreshold.get.toDouble / 100))
   }
 
   // addin taskid to the set inorder to avaoid killing the same task again and again.
