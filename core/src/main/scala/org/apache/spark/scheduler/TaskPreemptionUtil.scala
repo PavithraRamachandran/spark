@@ -28,6 +28,10 @@ import org.apache.spark.internal.Logging
 
 object TaskPreemptionUtil extends Logging {
 
+  def addPreemptedWeightageToExecID(execIdToPreempt: String): Unit = {
+    executionIdVsPreemptWeightage.put(execIdToPreempt, execIdPreemptWeight.addAndGet(1))
+  }
+
   val SPARK_EXECUTION_ID = "spark.execution.id"
 
   val SPARK_SQL_EXECUTION_ID = "spark.sql.execution.id"
@@ -42,6 +46,8 @@ object TaskPreemptionUtil extends Logging {
 
   private val executionIdVsWeightage = new mutable.HashMap[String, Long]
 
+  private val executionIdVsPreemptWeightage = new mutable.HashMap[String, Long]
+
   // keeping track of the taskid s killled, inorder to prevent over killin of the same task
   private val killedTaskId = new mutable.HashSet[Long]
 
@@ -49,6 +55,8 @@ object TaskPreemptionUtil extends Logging {
   private val executionIdVsPreemptedCores = new mutable.HashMap[String, AtomicInteger]
 
   val execIdWeight = new AtomicLong(0)
+
+  val execIdPreemptWeight = new AtomicLong(0)
 
   private[scheduler] def onTaskStart(taskId: Long,
                                      taskSetManager: TaskSetManager): Unit = synchronized {
@@ -239,16 +247,28 @@ object TaskPreemptionUtil extends Logging {
     logError("Execution ID =" + taskSetManager.sparkExecutionId.get)
     logError("CoreUsage defined for thr execid " +
       executionIdVsCoreUsage.get(taskSetManager.sparkExecutionId.get).isDefined)
-    val sortedExecutionUsage = executionIdVsCoreUsage.toList.sortBy(_._2.get()).reverse
-    logError("Sorted CoreUsage " + sortedExecutionUsage)
-    sortedExecutionUsage.foreach(execId => {
+    val sortedExecutionUsage = (executionIdVsCoreUsage.toList.sortBy(_._2.get()).reverse).toIterator
+    logError("Sorted CoreUsage " + executionIdVsCoreUsage.toList.sortBy(_._2.get()).reverse)
+    while (sortedExecutionUsage.hasNext) {
+      val execId = sortedExecutionUsage.next()
       if (!execId._1.equals(taskSetManager.sparkExecutionId.get)) {
-        logError("Exection ID to be Preempted " + execId._1)
-        logError("CoreUsage to be Preempted " + execId._2)
+        if (sortedExecutionUsage.hasNext) {
+          val execIdNext = sortedExecutionUsage.next()
+          if (execIdNext._2.get() == execId._2.get()) {
+            if (executionIdVsPreemptWeightage.get(execId._1).isDefined) {
+              if (executionIdVsPreemptWeightage.get(execIdNext._1).isDefined) {
+                if (executionIdVsPreemptWeightage.get(execIdNext._1).get
+                  > executionIdVsPreemptWeightage.get(execId._1).get) {
+                  return execId._1
+                }
+              }
+              return execIdNext._1
+            }
+          }
+        }
         return execId._1
       }
-      null
-    })
+    }
     null
   }
 

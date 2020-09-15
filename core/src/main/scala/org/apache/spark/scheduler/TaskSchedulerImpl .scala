@@ -484,6 +484,10 @@ private[spark] class TaskSchedulerImpl(
                   }
                 }
                 }
+                if (isPreempted)
+                {
+                  TaskPreemptionUtil.addPreemptedWeightageToExecID(execIdToPreempt)
+                }
                 isPreempted
               }
 
