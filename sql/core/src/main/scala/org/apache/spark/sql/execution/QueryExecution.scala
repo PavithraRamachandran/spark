@@ -129,65 +129,35 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
       // We need the types so we can output struct field names
       val types = analyzed.output.map(_.dataType)
       // Reformat to match hive tab delimited output.
-      result.map(_.zip(types).map(toHiveString)).map(_.mkString("\t"))
+      result.map(_.zip(types).map(e => toHiveString(e)))
+        .map(_.mkString("\t"))
   }
 
   /** Formats a datum (based on the given data type) and returns the string representation. */
-  private def toHiveString(a: (Any, DataType)): String = {
-    val primitiveTypes = Seq(StringType, IntegerType, LongType, DoubleType, FloatType,
-      BooleanType, ByteType, ShortType, DateType, TimestampType, BinaryType)
-
-    def formatDecimal(d: java.math.BigDecimal): String = {
-      if (d.compareTo(java.math.BigDecimal.ZERO) == 0) {
-        java.math.BigDecimal.ZERO.toPlainString
-      } else {
-        d.stripTrailingZeros().toPlainString
-      }
-    }
-
-    /** Hive outputs fields of structs slightly differently than top level attributes. */
-    def toHiveStructString(a: (Any, DataType)): String = a match {
-      case (struct: Row, StructType(fields)) =>
-        struct.toSeq.zip(fields).map {
-          case (v, t) => s""""${t.name}":${toHiveStructString((v, t.dataType))}"""
-        }.mkString("{", ",", "}")
-      case (seq: Seq[_], ArrayType(typ, _)) =>
-        seq.map(v => (v, typ)).map(toHiveStructString).mkString("[", ",", "]")
-      case (map: Map[_, _], MapType(kType, vType, _)) =>
-        map.map {
-          case (key, value) =>
-            toHiveStructString((key, kType)) + ":" + toHiveStructString((value, vType))
-        }.toSeq.sorted.mkString("{", ",", "}")
-      case (null, _) => "null"
-      case (s: String, StringType) => "\"" + s + "\""
-      case (decimal, DecimalType()) => decimal.toString
-      case (interval, CalendarIntervalType) => interval.toString
-      case (other, tpe) if primitiveTypes contains tpe => other.toString
-    }
-
-    a match {
-      case (struct: Row, StructType(fields)) =>
-        struct.toSeq.zip(fields).map {
-          case (v, t) => s""""${t.name}":${toHiveStructString((v, t.dataType))}"""
-        }.mkString("{", ",", "}")
-      case (seq: Seq[_], ArrayType(typ, _)) =>
-        seq.map(v => (v, typ)).map(toHiveStructString).mkString("[", ",", "]")
-      case (map: Map[_, _], MapType(kType, vType, _)) =>
-        map.map {
-          case (key, value) =>
-            toHiveStructString((key, kType)) + ":" + toHiveStructString((value, vType))
-        }.toSeq.sorted.mkString("{", ",", "}")
-      case (null, _) => "NULL"
-      case (d: Date, DateType) =>
-        DateTimeUtils.dateToString(DateTimeUtils.fromJavaDate(d))
-      case (t: Timestamp, TimestampType) =>
-        DateTimeUtils.timestampToString(DateTimeUtils.fromJavaTimestamp(t),
-          DateTimeUtils.getTimeZone(sparkSession.sessionState.conf.sessionLocalTimeZone))
-      case (bin: Array[Byte], BinaryType) => new String(bin, StandardCharsets.UTF_8)
-      case (decimal: java.math.BigDecimal, DecimalType()) => formatDecimal(decimal)
-      case (interval, CalendarIntervalType) => interval.toString
-      case (other, tpe) if primitiveTypes.contains(tpe) => other.toString
-    }
+  def toHiveString(a: (Any, DataType), nested: Boolean = false): String = a match {
+    case (null, _) => if (nested) "null" else "NULL"
+    case (b, BooleanType) => b.toString
+    case (d: Date, DateType) =>
+      DateTimeUtils.dateToString(DateTimeUtils.fromJavaDate(d))
+    case (t: Timestamp, TimestampType) =>
+      DateTimeUtils.timestampToString(DateTimeUtils.fromJavaTimestamp(t),
+        DateTimeUtils.getTimeZone(sparkSession.sessionState.conf.sessionLocalTimeZone))
+    case (bin: Array[Byte], BinaryType) => new String(bin, StandardCharsets.UTF_8)
+    case (decimal: java.math.BigDecimal, DecimalType()) => decimal.toPlainString
+    case (n, _: NumericType) => n.toString
+    case (s: String, StringType) => if (nested) "\"" + s + "\"" else s
+    case (interval, CalendarIntervalType) => interval.toString
+    case (seq: Seq[_], ArrayType(typ, _)) =>
+      seq.map(v => (v, typ)).map(e => toHiveString(e, true)).mkString("[", ",", "]")
+    case (m: Map[_, _], MapType(kType, vType, _)) =>
+      m.map { case (key, value) =>
+        toHiveString((key, kType), true) + ":" + toHiveString((value, vType), true)
+      }.toSeq.sorted.mkString("{", ",", "}")
+    case (struct: Row, StructType(fields)) =>
+      struct.toSeq.zip(fields).map { case (v, t) =>
+        s""""${t.name}":${toHiveString((v, t.dataType), true)}"""
+      }.mkString("{", ",", "}")
+    case (other, _: UserDefinedType[_]) => other.toString
   }
 
   def simpleString: String = withRedaction {
