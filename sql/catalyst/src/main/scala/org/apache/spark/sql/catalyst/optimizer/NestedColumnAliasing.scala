@@ -185,15 +185,10 @@ object NestedColumnAliasing {
 
         // Each expression can contain multiple nested fields.
         // Note that we keep the original names to deliver to parquet in a case-sensitive way.
-        val nestedFieldToAlias = dedupNestedFields
-          .distinct
-          .groupBy(_.canonicalized)
-          .toSeq
-          .flatMap { case (_, b) =>
-          val exprId = NamedExpression.newExprId
-          b.map {
-            f => (f, Alias(f, s"_gen_alias_${exprId.id}")(exprId, Seq.empty, None))
-          }
+        val exprIdMap = scala.collection.mutable.HashMap[Expression, ExprId]()
+        val nestedFieldToAlias = dedupNestedFields.distinct.map { f =>
+          val exprId = exprIdMap.getOrElseUpdate(f.canonicalized, NamedExpression.newExprId)
+          (f, Alias(f, s"_gen_alias_${exprId.id}")(exprId, Seq.empty, None))
         }
         // If all nested fields of `attr` are used, we don't need to introduce new aliases.
         // By default, ColumnPruning rule uses `attr` already.
