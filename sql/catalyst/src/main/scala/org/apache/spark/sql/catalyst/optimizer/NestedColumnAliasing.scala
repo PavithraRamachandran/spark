@@ -190,6 +190,7 @@ object NestedColumnAliasing {
           val exprId = exprIdMap.getOrElseUpdate(f.canonicalized, NamedExpression.newExprId)
           (f, Alias(f, s"_gen_alias_${exprId.id}")(exprId, Seq.empty, None))
         }
+
         // If all nested fields of `attr` are used, we don't need to introduce new aliases.
         // By default, ColumnPruning rule uses `attr` already.
         // Note that we need to remove cosmetic variations first, so we only count a
