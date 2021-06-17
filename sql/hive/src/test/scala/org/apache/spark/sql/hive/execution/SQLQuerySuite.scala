@@ -2583,6 +2583,15 @@ abstract class SQLQuerySuiteBase extends QueryTest with SQLTestUtils with TestHi
       }
     }
   }
+
+  test("trial") {
+    withTable("contact") {
+      sql("create table contact(SL_NO int,ID_NAME struct<ID:int,name:string>) stored as parquet")
+      sql("INSERT INTO contact values(1, struct(1, 'adam'))")
+      checkAnswer(sql("select ID_NAME.name, ID_NAME.Name from contact group by " +
+        "ID_NAME.name, ID_NAME.Name order by ID_NAME.name, ID_NAME.Name"), Row("adam", "adam"))
+    }
+  }
 }
 
 @SlowHiveTest
